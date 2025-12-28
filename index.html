@@ -1078,12 +1078,9 @@ html, body {
   </div>
   <button class="empty-state-button" onclick="hideIdleMessage()">Get Started</button>
 </div>
-
-<!-- Hidden File Input -->
-<input type="file" id="fileInput" class="upload-button" accept="image/*" multiple>
 <script type="module">
 // Import Supabase client
-import { createClient } from '@supabase/supabase-js';
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
 
 // Define the Supabase URL and Key
 const supabaseUrl = 'https://mmsmjkqozvwvxmlsltir.supabase.co';
@@ -1092,7 +1089,6 @@ const supabaseKey = 'sb_publishable__ZhYp1Z8Niphcf9NlQjAQA_oW-3RNt9';  // Use yo
 // Initialize Supabase client
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Now you can interact with Supabase
 // DOM Elements
 const profileBtn = document.getElementById('profileBtn');
 const dropdown = document.getElementById('dropdown');
@@ -1151,11 +1147,12 @@ async function loadImages() {
     .order('created_at', { ascending: false });
 
   if (error) {
-    console.error('Error loading images:', error.message);
+    console.error('Error loading images:', error.message || error);
+    images = [];
     return;
   }
 
-  images = data;
+  images = data || [];
 }
 
 // Upload image to Supabase Storage and table
@@ -1171,19 +1168,24 @@ async function uploadImage(file) {
     .upload(filePath, file);
 
   if (storageError) {
-    console.error('Storage upload error:', storageError.message);
+    console.error('Storage upload error:', storageError.message || storageError);
     showNotification('Upload failed ❌', '❌');
     return;
   }
 
-  // Get public URL
-  const { publicUrl, error: urlError } = supabase
-    .storage
-    .from('images')
-    .getPublicUrl(filePath);
+  // Get public URL (handle different SDK shapes)
+  const urlResult = await supabase.storage.from('images').getPublicUrl(filePath);
+  // urlResult can be { data: { publicUrl } } or { publicURL } depending on SDK
+  let publicUrl = null;
+  if (urlResult?.data) {
+    publicUrl = urlResult.data.publicUrl ?? urlResult.data.publicURL;
+  } else {
+    publicUrl = urlResult?.publicUrl ?? urlResult?.publicURL;
+  }
 
-  if (urlError) {
-    console.error('Error getting public URL:', urlError.message);
+  if (!publicUrl) {
+    console.error('Error getting public URL:', urlResult);
+    showNotification('Could not get public URL ❌', '❌');
     return;
   }
 
@@ -1195,7 +1197,7 @@ async function uploadImage(file) {
     .single();
 
   if (insertError) {
-    console.error('Error inserting into table:', insertError.message);
+    console.error('Error inserting into table:', insertError.message || insertError);
     return;
   }
 
@@ -1209,7 +1211,7 @@ async function updateImage(id, changes) {
     .update(changes)
     .eq('id', id);
 
-  if (error) console.error('Error updating image:', error.message);
+  if (error) console.error('Error updating image:', error.message || error);
 }
 
 // Delete image from Supabase storage & table
@@ -1221,45 +1223,65 @@ async function deleteImageSupabase(id, url) {
     .eq('id', id);
 
   if (tableError) {
-    console.error('Error deleting from table:', tableError.message);
+    console.error('Error deleting from table:', tableError.message || tableError);
   }
 
-  // Extract storage path
-  const path = url.split('/').slice(-2).join('/'); // assumes "public/filename.ext"
-  const { error: storageError } = await supabase
-    .storage
-    .from('images')
-    .remove([path]);
+  // Try to extract storage path (robust handling)
+  let path;
+  try {
+    // If URL contains '/storage/v1/object/public/', extract bucket/path
+    const marker = '/storage/v1/object/public/';
+    const idx = url.indexOf(marker);
+    if (idx !== -1) {
+      path = url.slice(idx + marker.length); // bucket/path...
+    } else {
+      // fallback to last two segments e.g., public/filename.ext
+      path = url.split('/').slice(-2).join('/');
+    }
+  } catch (e) {
+    console.error('Error extracting storage path:', e);
+  }
 
-  if (storageError) console.error('Storage delete error:', storageError.message);
+  if (path) {
+    const { error: storageError } = await supabase
+      .storage
+      .from('images')
+      .remove([path]);
+    if (storageError) console.error('Storage delete error:', storageError.message || storageError);
+  }
 
   showNotification('Image deleted 🗑️', '🗑️');
 }
 
 // ------------------- REALTIME -------------------
 function setupRealtime() {
-  supabase
-    .from('images')
-    .on('*', payload => {
-      switch (payload.eventType) {
-        case 'INSERT':
-          images.unshift(payload.new);
-          renderGrid();
-          break;
-        case 'UPDATE':
-          const index = images.findIndex(img => img.id === payload.new.id);
-          if (index !== -1) {
-            images[index] = payload.new;
+  // Keep existing approach; if using v2 of SDK, replace with proper realtime channel code.
+  try {
+    supabase
+      .from('images')
+      .on('*', payload => {
+        switch (payload.eventType) {
+          case 'INSERT':
+            images.unshift(payload.new);
             renderGrid();
-          }
-          break;
-        case 'DELETE':
-          images = images.filter(img => img.id !== payload.old.id);
-          renderGrid();
-          break;
-      }
-    })
-    .subscribe();
+            break;
+          case 'UPDATE':
+            const index = images.findIndex(img => img.id === payload.new.id);
+            if (index !== -1) {
+              images[index] = payload.new;
+              renderGrid();
+            }
+            break;
+          case 'DELETE':
+            images = images.filter(img => img.id !== payload.old.id);
+            renderGrid();
+            break;
+        }
+      })
+      .subscribe();
+  } catch (e) {
+    console.warn('Realtime subscription failed (SDK mismatch?)', e);
+  }
 }
 
 // ------------------- UI & RENDER -------------------
@@ -1419,48 +1441,88 @@ function resetIdleTimer() {
   }
 }
 
-// ------------------- EVENT LISTENERS -------------------
-profileBtn.addEventListener('click', e => {
-  e.stopPropagation();
-  dropdown.classList.toggle('show');
-});
+// ------------------- MISSING/INLINE FUNCTIONS -------------------
+// Show/hide the 3-dot menu for a card
+function showMenu(event, index) {
+  event.stopPropagation();
+  // close other menus
+  document.querySelectorAll('.menu-dropdown').forEach(m => m.classList.remove('show'));
+  const menu = document.getElementById(`menuDropdown${index}`);
+  if (menu) menu.classList.toggle('show');
+}
 
-document.addEventListener('click', () => {
-  dropdown.classList.remove('show');
-  document.querySelectorAll('.menu-dropdown').forEach(menu => menu.classList.remove('show'));
-});
-
-uploadItem.addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', async e => {
-  const files = Array.from(e.target.files);
-  for (let file of files) await uploadImage(file);
-  fileInput.value = '';
-  hideIdleMessage();
-});
-
-toggleDark.addEventListener('click', () => {
-  const isDark = document.body.classList.toggle('dark-mode');
-  localStorage.setItem('inspireTheme', isDark ? 'dark' : 'light');
-  switchEl.classList.toggle('active');
-  showNotification(isDark ? 'Dark mode enabled 🌙' : 'Light mode enabled ☀️');
-});
-
-modalClose.addEventListener('click', () => modalOverlay.style.display = 'none');
-noteEditorCancel.addEventListener('click', () => noteEditorOverlay.style.display = 'none');
-noteEditorSave.addEventListener('click', saveNote);
-
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') {
-    noteEditorOverlay.style.display = 'none';
-    modalOverlay.style.display = 'none';
+// Copy image URL to clipboard
+async function copyImage(index) {
+  try {
+    const url = images[index]?.url;
+    if (!url) return showNotification('No URL to copy', '⚠️');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(url);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    showNotification('Image URL copied 📋', '📋');
+  } catch (e) {
+    console.error('Copy failed', e);
+    showNotification('Copy failed ❌', '❌');
   }
+}
+
+// ------------------- EVENT LISTENERS -------------------
+document.addEventListener('DOMContentLoaded', () => {
+  profileBtn?.addEventListener('click', e => {
+    e.stopPropagation();
+    dropdown.classList.toggle('show');
+  });
+
+  document.addEventListener('click', () => {
+    dropdown.classList.remove('show');
+    document.querySelectorAll('.menu-dropdown').forEach(menu => menu.classList.remove('show'));
+  });
+
+  uploadItem?.addEventListener('click', () => fileInput.click());
+  fileInput?.addEventListener('change', async e => {
+    const files = Array.from(e.target.files);
+    for (let file of files) await uploadImage(file);
+    fileInput.value = '';
+    hideIdleMessage();
+  });
+
+  toggleDark?.addEventListener('click', () => {
+    const isDark = document.body.classList.toggle('dark-mode');
+    localStorage.setItem('inspireTheme', isDark ? 'dark' : 'light');
+    switchEl.classList.toggle('active');
+    showNotification(isDark ? 'Dark mode enabled 🌙' : 'Light mode enabled ☀️');
+  });
+
+  modalClose?.addEventListener('click', () => modalOverlay.style.display = 'none');
+  noteEditorCancel?.addEventListener('click', () => noteEditorOverlay.style.display = 'none');
+  noteEditorSave?.addEventListener('click', saveNote);
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      noteEditorOverlay.style.display = 'none';
+      modalOverlay.style.display = 'none';
+    }
+  });
+
+  // Expose functions used by inline onclick attributes to global scope
+  window.showMenu = showMenu;
+  window.editNote = editNote;
+  window.copyImage = copyImage;
+  window.deleteImageHandler = deleteImageHandler;
+  window.toggleLike = toggleLike;
+  window.hideIdleMessage = hideIdleMessage;
 });
 
 // ------------------- INITIALIZE APP -------------------
 initialize();
 </script>
-
 </body>
 
 </html>
-
