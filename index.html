@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Inspire Board</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📌</text></svg>">
 
 <style>
 :root {
@@ -380,6 +381,7 @@ body {
   right: 12px;
   opacity: 0;
   transition: opacity 0.3s ease;
+  z-index: 5;
 }
 
 .card:hover .three-dot-menu {
@@ -415,7 +417,7 @@ body {
   box-shadow: var(--shadow-lg);
   min-width: 180px;
   overflow: hidden;
-  z-index: 10;
+  z-index: 100;
   display: none;
   animation: dropdownAppear 0.2s ease;
   border: 1px solid var(--border);
@@ -899,6 +901,24 @@ body {
   line-height: 1.5;
 }
 
+/* Empty State Button */
+.empty-state-button {
+  padding: 12px 24px;
+  background: var(--primary);
+  color: white;
+  border: none;
+  border-radius: 24px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.empty-state-button:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
 /* ALIGNMENT FIXES */
 .main-image-container {
   display: flex;
@@ -1000,6 +1020,9 @@ html, body {
   </div>
 </nav>
 
+<!-- File Input (Hidden) -->
+<input type="file" id="fileInput" class="upload-button" accept="image/*" multiple style="display: none;">
+
 <!-- Loading Overlay -->
 <div class="loading-overlay" id="loadingOverlay">
   <div class="loading-spinner"></div>
@@ -1078,13 +1101,14 @@ html, body {
   </div>
   <button class="empty-state-button" onclick="hideIdleMessage()">Get Started</button>
 </div>
+
 <script type="module">
 // Import Supabase client
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
 
 // Define the Supabase URL and Key
 const supabaseUrl = 'https://mmsmjkqozvwvxmlsltir.supabase.co';
-const supabaseKey = 'sb_publishable__ZhYp1Z8Niphcf9NlQjAQA_oW-3RNt9';  // Use your public anon key here
+const supabaseKey = 'sb_publishable__ZhYp1Z8Niphcf9NlQjAQA_oW-3RNt9';
 
 // Initialize Supabase client
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -1120,16 +1144,25 @@ let images = [];
 let currentImageIndex = 0;
 let editingNoteIndex = null;
 let TAP_DELAY = 300;
-let tapCount = 0;
 let lastTapTime = 0;
 let IDLE_TIMEOUT = 10000;
 let idleTimer;
+
+// Bucket name - MUST match your Supabase bucket
+const BUCKET_NAME = 'inspire-board';
 
 // Rose petal emojis
 const PETALS = ['🌹', '🥀', '🌺', '🌷', '🌸', '💮', '🏵️'];
 
 // ------------------- INITIALIZE -------------------
 async function initialize() {
+  // Initialize dark mode
+  const savedTheme = localStorage.getItem('inspireTheme');
+  if (savedTheme === 'dark') {
+    document.body.classList.add('dark-mode');
+    switchEl.classList.add('active');
+  }
+  
   await loadImages();
   renderGrid();
   setupRealtime();
@@ -1141,157 +1174,210 @@ async function initialize() {
 
 // Load all images from Supabase table
 async function loadImages() {
-  const { data, error } = await supabase
-    .from('images')
-    .select('*')
-    .order('created_at', { ascending: false });
+  try {
+    const { data, error } = await supabase
+      .from('images')
+      .select('*')
+      .order('created_at', { ascending: false });
 
-  if (error) {
-    console.error('Error loading images:', error.message || error);
+    if (error) {
+      console.error('Error loading images:', error.message || error);
+      images = [];
+      return;
+    }
+
+    images = data || [];
+    console.log('Loaded images:', images.length);
+  } catch (error) {
+    console.error('Error in loadImages:', error);
     images = [];
-    return;
   }
-
-  images = data || [];
 }
 
 // Upload image to Supabase Storage and table
 async function uploadImage(file) {
-  const fileExt = file.name.split('.').pop();
-  const fileName = `${Date.now()}.${fileExt}`;
-  const filePath = `public/${fileName}`;
+  try {
+    // Check file size (limit to 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      showNotification('File too large (max 5MB) ❌', '❌');
+      return;
+    }
+    
+    // Check file type
+    if (!file.type.startsWith('image/')) {
+      showNotification('Please upload an image file ❌', '❌');
+      return;
+    }
 
-  // Upload to storage
-  const { data: storageData, error: storageError } = await supabase
-    .storage
-    .from('images')
-    .upload(filePath, file);
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${Date.now()}.${fileExt}`;
+    const filePath = fileName; // Upload to root of bucket
 
-  if (storageError) {
-    console.error('Storage upload error:', storageError.message || storageError);
+    // Upload to storage
+    const { data: storageData, error: storageError } = await supabase
+      .storage
+      .from(BUCKET_NAME)
+      .upload(filePath, file, {
+        cacheControl: '3600',
+        upsert: false
+      });
+
+    if (storageError) {
+      console.error('Storage upload error:', storageError.message || storageError);
+      
+      if (storageError.message.includes('permission') || storageError.message.includes('403')) {
+        showNotification('Permission denied. Please check storage policies for the inspire-board bucket.', '⚠️');
+      } else {
+        showNotification(`Upload failed: ${storageError.message} ❌`, '❌');
+      }
+      return;
+    }
+
+    // Get public URL
+    const { data: urlData } = await supabase
+      .storage
+      .from(BUCKET_NAME)
+      .getPublicUrl(filePath);
+    
+    const publicUrl = urlData?.publicUrl;
+
+    if (!publicUrl) {
+      console.error('Error getting public URL:', urlData);
+      showNotification('Could not get public URL ❌', '❌');
+      return;
+    }
+
+    // Insert into Supabase table
+    const { data: newImage, error: insertError } = await supabase
+      .from('images')
+      .insert([{ 
+        url: publicUrl, 
+        liked: false, 
+        note: '',
+        filename: fileName,
+        filepath: filePath
+      }])
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error('Error inserting into table:', insertError.message || insertError);
+      showNotification('Upload failed ❌', '❌');
+      
+      // Try to delete the uploaded file if table insert fails
+      try {
+        await supabase.storage.from(BUCKET_NAME).remove([filePath]);
+      } catch (deleteError) {
+        console.error('Failed to clean up file:', deleteError);
+      }
+      
+      return;
+    }
+
+    // Add to local images array
+    images.unshift(newImage);
+    renderGrid();
+    showNotification('Image uploaded successfully! 📸', '✅');
+    hideIdleMessage();
+    return newImage;
+  } catch (error) {
+    console.error('Error in uploadImage:', error);
     showNotification('Upload failed ❌', '❌');
-    return;
   }
-
-  // Get public URL (handle different SDK shapes)
-  const urlResult = await supabase.storage.from('images').getPublicUrl(filePath);
-  // urlResult can be { data: { publicUrl } } or { publicURL } depending on SDK
-  let publicUrl = null;
-  if (urlResult?.data) {
-    publicUrl = urlResult.data.publicUrl ?? urlResult.data.publicURL;
-  } else {
-    publicUrl = urlResult?.publicUrl ?? urlResult?.publicURL;
-  }
-
-  if (!publicUrl) {
-    console.error('Error getting public URL:', urlResult);
-    showNotification('Could not get public URL ❌', '❌');
-    return;
-  }
-
-  // Insert into Supabase table
-  const { data: newImage, error: insertError } = await supabase
-    .from('images')
-    .insert([{ url: publicUrl, liked: false, note: '' }])
-    .select()
-    .single();
-
-  if (insertError) {
-    console.error('Error inserting into table:', insertError.message || insertError);
-    return;
-  }
-
-  showNotification('Image uploaded 📸', '📸');
 }
 
 // Update like or note in Supabase table
 async function updateImage(id, changes) {
-  const { error } = await supabase
-    .from('images')
-    .update(changes)
-    .eq('id', id);
+  try {
+    const { error } = await supabase
+      .from('images')
+      .update(changes)
+      .eq('id', id);
 
-  if (error) console.error('Error updating image:', error.message || error);
+    if (error) {
+      console.error('Error updating image:', error.message || error);
+      throw error;
+    }
+  } catch (error) {
+    console.error('Error in updateImage:', error);
+    throw error;
+  }
 }
 
 // Delete image from Supabase storage & table
-async function deleteImageSupabase(id, url) {
-  // Delete from table
-  const { error: tableError } = await supabase
-    .from('images')
-    .delete()
-    .eq('id', id);
-
-  if (tableError) {
-    console.error('Error deleting from table:', tableError.message || tableError);
-  }
-
-  // Try to extract storage path (robust handling)
-  let path;
+async function deleteImageSupabase(id, url, filepath) {
   try {
-    // If URL contains '/storage/v1/object/public/', extract bucket/path
-    const marker = '/storage/v1/object/public/';
-    const idx = url.indexOf(marker);
-    if (idx !== -1) {
-      path = url.slice(idx + marker.length); // bucket/path...
-    } else {
-      // fallback to last two segments e.g., public/filename.ext
-      path = url.split('/').slice(-2).join('/');
-    }
-  } catch (e) {
-    console.error('Error extracting storage path:', e);
-  }
-
-  if (path) {
-    const { error: storageError } = await supabase
-      .storage
+    // Delete from table first
+    const { error: tableError } = await supabase
       .from('images')
-      .remove([path]);
-    if (storageError) console.error('Storage delete error:', storageError.message || storageError);
-  }
+      .delete()
+      .eq('id', id);
 
-  showNotification('Image deleted 🗑️', '🗑️');
+    if (tableError) {
+      console.error('Error deleting from table:', tableError.message || tableError);
+      throw tableError;
+    }
+
+    // Delete from storage
+    if (filepath) {
+      const { error: storageError } = await supabase
+        .storage
+        .from(BUCKET_NAME)
+        .remove([filepath]);
+      
+      if (storageError) {
+        console.error('Storage delete error:', storageError.message || storageError);
+        // Continue even if storage delete fails
+      }
+    }
+
+    showNotification('Image deleted 🗑️', '🗑️');
+    return true;
+  } catch (error) {
+    console.error('Error in deleteImageSupabase:', error);
+    showNotification('Delete failed ❌', '❌');
+    throw error;
+  }
 }
 
 // ------------------- REALTIME -------------------
 function setupRealtime() {
-  // Keep existing approach; if using v2 of SDK, replace with proper realtime channel code.
   try {
-    supabase
-      .from('images')
-      .on('*', payload => {
-        switch (payload.eventType) {
-          case 'INSERT':
-            images.unshift(payload.new);
-            renderGrid();
-            break;
-          case 'UPDATE':
-            const index = images.findIndex(img => img.id === payload.new.id);
-            if (index !== -1) {
-              images[index] = payload.new;
-              renderGrid();
-            }
-            break;
-          case 'DELETE':
-            images = images.filter(img => img.id !== payload.old.id);
-            renderGrid();
-            break;
+    // Subscribe to changes in images table
+    const channel = supabase
+      .channel('images-channel')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'images' },
+        async (payload) => {
+          console.log('Database change received:', payload.eventType);
+          await loadImages();
+          renderGrid();
         }
-      })
-      .subscribe();
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          console.log('Realtime subscription active');
+        }
+      });
+
+    return () => supabase.removeChannel(channel);
   } catch (e) {
-    console.warn('Realtime subscription failed (SDK mismatch?)', e);
+    console.warn('Realtime subscription failed:', e);
   }
 }
 
-// ------------------- UI & RENDER -------------------
+// ------------------- UI FUNCTIONS -------------------
+
 function hideLoading() {
   loadingOverlay.classList.add('hidden');
   setTimeout(() => {
     loadingOverlay.style.display = 'none';
   }, 500);
 
-  if (images.length === 0) idleMessage.classList.add('show');
+  if (images.length === 0) {
+    idleMessage.classList.add('show');
+  }
 }
 
 function renderGrid() {
@@ -1314,7 +1400,6 @@ function renderGrid() {
 
     card.innerHTML = `
       ${noteBubble}
-      <img src="${image.url}" class="card-image loaded" data-index="${index}" alt="Inspiration image">
       <div class="three-dot-menu">
         <button class="menu-button" onclick="showMenu(event, ${index})">⋯</button>
         <div class="menu-dropdown" id="menuDropdown${index}">
@@ -1322,7 +1407,7 @@ function renderGrid() {
             <span>💭</span> ${image.note ? 'Edit Note' : 'Add Note'}
           </button>
           <button class="menu-item" onclick="copyImage(${index})">
-            <span>📋</span> Copy Image
+            <span>📋</span> Copy Image URL
           </button>
           <button class="menu-item delete" onclick="deleteImageHandler(${index})">
             <span>🗑️</span> Delete
@@ -1336,22 +1421,124 @@ function renderGrid() {
         </button>
       </div>
     `;
+
+    // Create image element
+    const img = document.createElement('img');
+    img.className = 'card-image loading';
+    img.src = image.url;
+    img.dataset.index = index;
+    img.alt = 'Inspiration image';
+    img.onload = () => {
+      img.classList.replace('loading', 'loaded');
+    };
+    img.onerror = () => {
+      console.error('Failed to load image:', image.url);
+      img.alt = 'Failed to load image';
+      img.classList.replace('loading', 'loaded');
+    };
+    
+    // Insert image at the beginning
+    card.insertBefore(img, card.firstChild);
+    
+    // Add double-tap handler for mobile
+    let lastTouchTime = 0;
+    card.addEventListener('touchstart', (e) => {
+      const currentTime = new Date().getTime();
+      const tapLength = currentTime - lastTouchTime;
+      if (tapLength < TAP_DELAY && tapLength > 0) {
+        // Double tap detected
+        toggleLike(index);
+        e.preventDefault();
+      }
+      lastTouchTime = currentTime;
+    });
+    
+    // Add double-click handler for desktop
+    card.addEventListener('dblclick', () => toggleLike(index));
+    
+    // Add click handler for modal
+    img.addEventListener('click', () => openModal(index));
+    
     grid.appendChild(card);
   });
 
   updateCounter();
 }
 
+// ------------------- MODAL FUNCTIONS -------------------
+
+function openModal(index) {
+  currentImageIndex = index;
+  const image = images[index];
+  mainImage.src = image.url;
+  
+  // Show note bubble if exists
+  const existingBubble = document.querySelector('.main-image-container .note-bubble');
+  if (existingBubble) {
+    existingBubble.remove();
+  }
+  
+  if (image.note) {
+    const noteBubble = document.createElement('div');
+    noteBubble.className = 'note-bubble show';
+    noteBubble.innerHTML = `<div class="note-content">${image.note}</div>`;
+    document.querySelector('.main-image-container').appendChild(noteBubble);
+  }
+  
+  // Load related images
+  loadRelatedImages(index);
+  modalOverlay.style.display = 'flex';
+}
+
+function loadRelatedImages(currentIndex) {
+  relatedGrid.innerHTML = '';
+  const relatedImages = images.filter((_, idx) => idx !== currentIndex).slice(0, 6);
+  
+  relatedImages.forEach((img, idx) => {
+    const card = document.createElement('div');
+    card.className = 'related-card';
+    const imgIndex = images.findIndex(i => i.id === img.id);
+    const imgEl = document.createElement('img');
+    imgEl.src = img.url;
+    imgEl.alt = 'Related image';
+    imgEl.dataset.index = imgIndex;
+    
+    card.appendChild(imgEl);
+    card.addEventListener('click', () => {
+      openModal(imgIndex);
+    });
+    relatedGrid.appendChild(card);
+  });
+}
+
 // ------------------- IMAGE ACTIONS -------------------
+
 function toggleLike(index) {
   const image = images[index];
-  image.liked = !image.liked;
-  updateImage(image.id, { liked: image.liked });
+  const newLikedState = !image.liked;
+  image.liked = newLikedState;
+  
+  // Update UI immediately
+  const card = document.querySelector(`[data-index="${index}"]`)?.closest('.card');
+  if (card) {
+    const likeBtn = card.querySelector('.action-button');
+    if (likeBtn) {
+      likeBtn.textContent = newLikedState ? '❤️' : '🤍';
+      likeBtn.classList.toggle('liked', newLikedState);
+    }
+  }
+  
+  updateImage(image.id, { liked: newLikedState })
+    .catch(error => {
+      // Revert on error
+      image.liked = !newLikedState;
+      showNotification('Failed to update like ❌', '❌');
+    });
 
   showHeartOnCard(index);
   showNotification(
-    image.liked ? 'Added to favorites 🌹' : 'Removed from favorites',
-    image.liked ? '❤️' : '💔'
+    newLikedState ? 'Added to favorites 🌹' : 'Removed from favorites',
+    newLikedState ? '❤️' : '💔'
   );
 }
 
@@ -1359,27 +1546,103 @@ function editNote(index) {
   editingNoteIndex = index;
   noteEditorTextarea.value = images[index].note || '';
   noteEditorOverlay.style.display = 'flex';
+  // Close any open menus
+  document.querySelectorAll('.menu-dropdown').forEach(m => m.classList.remove('show'));
 }
 
 function saveNote() {
   if (editingNoteIndex !== null) {
     const image = images[editingNoteIndex];
-    image.note = noteEditorTextarea.value.trim();
-    updateImage(image.id, { note: image.note });
+    const newNote = noteEditorTextarea.value.trim();
+    const oldNote = image.note;
+    image.note = newNote;
+    
+    // Update UI immediately
+    const card = document.querySelector(`[data-index="${editingNoteIndex}"]`)?.closest('.card');
+    if (card) {
+      const noteBubble = card.querySelector('.note-bubble');
+      if (newNote && !noteBubble) {
+        const newNoteBubble = document.createElement('div');
+        newNoteBubble.className = 'note-bubble';
+        newNoteBubble.id = `noteBubble${image.id}`;
+        newNoteBubble.innerHTML = `<div class="note-content">${newNote}</div>`;
+        card.insertBefore(newNoteBubble, card.firstChild);
+      } else if (newNote && noteBubble) {
+        noteBubble.querySelector('.note-content').textContent = newNote;
+      } else if (!newNote && noteBubble) {
+        noteBubble.remove();
+      }
+    }
+    
+    updateImage(image.id, { note: newNote })
+      .then(() => {
+        showNotification('Note saved 💭', '💭');
+      })
+      .catch(error => {
+        // Revert on error
+        image.note = oldNote;
+        showNotification('Failed to save note ❌', '❌');
+      });
+    
     editingNoteIndex = null;
     noteEditorOverlay.style.display = 'none';
-    showNotification('Note saved 💭', '💭');
   }
 }
 
 function deleteImageHandler(index) {
   const image = images[index];
-  if (confirm('Delete this image?')) {
-    deleteImageSupabase(image.id, image.url);
+  if (confirm('Delete this image? This cannot be undone.')) {
+    const imageToDelete = images[index];
+    
+    // Remove from local array immediately
+    images.splice(index, 1);
+    renderGrid();
+    
+    deleteImageSupabase(imageToDelete.id, imageToDelete.url, imageToDelete.filepath)
+      .catch(error => {
+        // Add back if delete failed
+        images.splice(index, 0, imageToDelete);
+        renderGrid();
+        showNotification('Delete failed. Please try again.', '❌');
+      });
+    
+    // Close menu
+    document.querySelectorAll('.menu-dropdown').forEach(m => m.classList.remove('show'));
   }
 }
 
-// ------------------- OTHER UI -------------------
+async function copyImage(index) {
+  try {
+    const url = images[index]?.url;
+    if (!url) {
+      showNotification('No URL to copy', '⚠️');
+      return;
+    }
+    
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(url);
+    } else {
+      // Fallback for older browsers
+      const textArea = document.createElement('textarea');
+      textArea.value = url;
+      textArea.style.position = 'fixed';
+      textArea.style.left = '-999999px';
+      textArea.style.top = '-999999px';
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      document.execCommand('copy');
+      textArea.remove();
+    }
+    showNotification('Image URL copied to clipboard 📋', '📋');
+  } catch (e) {
+    console.error('Copy failed', e);
+    showNotification('Copy failed ❌', '❌');
+  }
+}
+
+// ------------------- OTHER UI FUNCTIONS -------------------
+
 function showHeartOnCard(index) {
   const card = document.querySelector(`[data-index="${index}"]`)?.closest('.card');
   if (!card) return;
@@ -1399,8 +1662,9 @@ function showNotification(message, icon = '✨') {
 }
 
 function updateCounter() {
-  counterText.textContent = `${images.length} image${images.length !== 1 ? 's' : ''}`;
-  imageCounter.style.display = images.length > 0 ? 'flex' : 'none';
+  const count = images.length;
+  counterText.textContent = `${count} image${count !== 1 ? 's' : ''}`;
+  imageCounter.style.display = count > 0 ? 'flex' : 'none';
 }
 
 function hideIdleMessage() {
@@ -1408,7 +1672,16 @@ function hideIdleMessage() {
   resetIdleTimer();
 }
 
+function showMenu(event, index) {
+  event.stopPropagation();
+  // Close other menus
+  document.querySelectorAll('.menu-dropdown').forEach(m => m.classList.remove('show'));
+  const menu = document.getElementById(`menuDropdown${index}`);
+  if (menu) menu.classList.toggle('show');
+}
+
 // ------------------- ROSE PETALS -------------------
+
 function createRosePetals(x = window.innerWidth/2, y = 0, count = 20) {
   for (let i = 0; i < count; i++) {
     const petal = document.createElement('div');
@@ -1424,6 +1697,7 @@ function createRosePetals(x = window.innerWidth/2, y = 0, count = 20) {
 }
 
 // ------------------- IDLE TIMER -------------------
+
 function setupIdleTimer() {
   resetIdleTimer();
   document.addEventListener('mousemove', resetIdleTimer);
@@ -1441,88 +1715,130 @@ function resetIdleTimer() {
   }
 }
 
-// ------------------- MISSING/INLINE FUNCTIONS -------------------
-// Show/hide the 3-dot menu for a card
-function showMenu(event, index) {
-  event.stopPropagation();
-  // close other menus
-  document.querySelectorAll('.menu-dropdown').forEach(m => m.classList.remove('show'));
-  const menu = document.getElementById(`menuDropdown${index}`);
-  if (menu) menu.classList.toggle('show');
-}
+// ------------------- CLEAR ALL DATA -------------------
 
-// Copy image URL to clipboard
-async function copyImage(index) {
+async function clearAllData() {
+  if (!confirm('Are you sure you want to delete ALL images? This cannot be undone.')) {
+    return;
+  }
+  
+  if (images.length === 0) {
+    showNotification('No images to delete', 'ℹ️');
+    return;
+  }
+  
+  showNotification('Deleting all images...', '⏳');
+  
   try {
-    const url = images[index]?.url;
-    if (!url) return showNotification('No URL to copy', '⚠️');
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(url);
-    } else {
-      const ta = document.createElement('textarea');
-      ta.value = url;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      ta.remove();
+    // Delete from storage first
+    const filepaths = images.map(img => img.filepath).filter(Boolean);
+    if (filepaths.length > 0) {
+      await supabase.storage.from(BUCKET_NAME).remove(filepaths);
     }
-    showNotification('Image URL copied 📋', '📋');
-  } catch (e) {
-    console.error('Copy failed', e);
-    showNotification('Copy failed ❌', '❌');
+    
+    // Delete from database
+    await supabase.from('images').delete().neq('id', 0);
+    
+    // Clear local state
+    images = [];
+    renderGrid();
+    idleMessage.classList.add('show');
+    showNotification('All images deleted', '🗑️');
+  } catch (error) {
+    console.error('Error clearing data:', error);
+    showNotification('Failed to delete all images', '❌');
   }
 }
 
 // ------------------- EVENT LISTENERS -------------------
-document.addEventListener('DOMContentLoaded', () => {
-  profileBtn?.addEventListener('click', e => {
-    e.stopPropagation();
-    dropdown.classList.toggle('show');
-  });
 
-  document.addEventListener('click', () => {
-    dropdown.classList.remove('show');
-    document.querySelectorAll('.menu-dropdown').forEach(menu => menu.classList.remove('show'));
-  });
-
-  uploadItem?.addEventListener('click', () => fileInput.click());
-  fileInput?.addEventListener('change', async e => {
-    const files = Array.from(e.target.files);
-    for (let file of files) await uploadImage(file);
-    fileInput.value = '';
-    hideIdleMessage();
-  });
-
-  toggleDark?.addEventListener('click', () => {
-    const isDark = document.body.classList.toggle('dark-mode');
-    localStorage.setItem('inspireTheme', isDark ? 'dark' : 'light');
-    switchEl.classList.toggle('active');
-    showNotification(isDark ? 'Dark mode enabled 🌙' : 'Light mode enabled ☀️');
-  });
-
-  modalClose?.addEventListener('click', () => modalOverlay.style.display = 'none');
-  noteEditorCancel?.addEventListener('click', () => noteEditorOverlay.style.display = 'none');
-  noteEditorSave?.addEventListener('click', saveNote);
-
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') {
-      noteEditorOverlay.style.display = 'none';
-      modalOverlay.style.display = 'none';
-    }
-  });
-
-  // Expose functions used by inline onclick attributes to global scope
-  window.showMenu = showMenu;
-  window.editNote = editNote;
-  window.copyImage = copyImage;
-  window.deleteImageHandler = deleteImageHandler;
-  window.toggleLike = toggleLike;
-  window.hideIdleMessage = hideIdleMessage;
+profileBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  dropdown.classList.toggle('show');
 });
 
+document.addEventListener('click', (e) => {
+  // Close dropdowns when clicking outside
+  if (!dropdown.contains(e.target) && e.target !== profileBtn) {
+    dropdown.classList.remove('show');
+  }
+  
+  // Close menu dropdowns when clicking outside
+  if (!e.target.closest('.three-dot-menu')) {
+    document.querySelectorAll('.menu-dropdown').forEach(menu => menu.classList.remove('show'));
+  }
+});
+
+uploadItem.addEventListener('click', () => {
+  fileInput.click();
+});
+
+fileInput.addEventListener('change', async e => {
+  const files = Array.from(e.target.files);
+  if (files.length === 0) return;
+  
+  showNotification(`Uploading ${files.length} image${files.length > 1 ? 's' : ''}...`, '⏳');
+  
+  // Upload files sequentially to avoid overwhelming the server
+  for (let file of files) {
+    await uploadImage(file);
+  }
+  
+  fileInput.value = '';
+});
+
+toggleDark.addEventListener('click', () => {
+  const isDark = document.body.classList.toggle('dark-mode');
+  localStorage.setItem('inspireTheme', isDark ? 'dark' : 'light');
+  switchEl.classList.toggle('active');
+  showNotification(isDark ? 'Dark mode enabled 🌙' : 'Light mode enabled ☀️', isDark ? '🌙' : '☀️');
+});
+
+clearItem.addEventListener('click', clearAllData);
+
+modalClose.addEventListener('click', () => {
+  modalOverlay.style.display = 'none';
+  // Remove note bubble from modal
+  const noteBubble = document.querySelector('.main-image-container .note-bubble');
+  if (noteBubble) noteBubble.remove();
+});
+
+noteEditorCancel.addEventListener('click', () => {
+  noteEditorOverlay.style.display = 'none';
+  editingNoteIndex = null;
+});
+
+noteEditorSave.addEventListener('click', saveNote);
+
+// Handle Enter key in note editor
+noteEditorTextarea.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    saveNote();
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    noteEditorOverlay.style.display = 'none';
+    modalOverlay.style.display = 'none';
+    editingNoteIndex = null;
+    dropdown.classList.remove('show');
+    document.querySelectorAll('.menu-dropdown').forEach(m => m.classList.remove('show'));
+  }
+});
+
+// Expose functions used by inline onclick attributes to global scope
+window.showMenu = showMenu;
+window.editNote = editNote;
+window.copyImage = copyImage;
+window.deleteImageHandler = deleteImageHandler;
+window.toggleLike = toggleLike;
+window.hideIdleMessage = hideIdleMessage;
+
 // ------------------- INITIALIZE APP -------------------
+
 initialize();
 </script>
 </body>
-
 </html>
