@@ -1082,16 +1082,18 @@ html, body {
 <!-- Hidden File Input -->
 <input type="file" id="fileInput" class="upload-button" accept="image/*" multiple>
 <script type="module">
-// Import Supabase
-import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
+// Import Supabase client
+import { createClient } from '@supabase/supabase-js';
 
-// 🔑 Replace these with your own project details
-const SUPABASE_URL = 'https://mmsmjkqozvwvxmlsltir.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1tc21qa3FvenZ3dnhtbHNsdGlyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY4NjM3MTMsImV4cCI6MjA4MjQzOTcxM30.cgHA1J6EiFSwOVlG7CGz2VCVRZugjMqahjP0gm1St1U';
+// Define the Supabase URL and Key
+const supabaseUrl = 'https://mmsmjkqozvwvxmlsltir.supabase.co';
+const supabaseKey = 'sb_publishable__ZhYp1Z8Niphcf9NlQjAQA_oW-3RNt9';  // Use your public anon key here
 
 // Initialize Supabase client
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabase = createClient(supabaseUrl, supabaseKey);
 
+// Now you can interact with Supabase
+npm install @supabase/supabase-js
 // DOM Elements
 const profileBtn = document.getElementById('profileBtn');
 const dropdown = document.getElementById('dropdown');
@@ -1460,4 +1462,5 @@ initialize();
 </script>
 
 </body>
+
 </html>
